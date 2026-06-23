@@ -12,14 +12,14 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, bb/ci-affected-only]
   push:
     branches: [main]
 
 permissions:
   contents: read
-  pull-requests: write  # needed by lint (PR comment) + supply-chain (PR comment)
-  actions: read          # needed by osv-scanner (SARIF upload)
+  pull-requests: write # needed by lint (PR comment) + supply-chain (PR comment)
+  actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
 
 concurrency:
