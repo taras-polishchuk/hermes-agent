@@ -149,6 +149,65 @@ def _tui_embedded_pane_clarifier(hint: str) -> str:
     return hint + _TUI_EMBEDDED_PANE_CLARIFIER
 
 
+
+
+def _build_wsos_bootstrap(agent: Any) -> str:
+    """ADR-014: Load Workspace OS canonical 4 files into the stable tier.
+
+    Files:
+      1. IDENTITY.md               — operator engineering identity (immutable)
+      2. ARCHITECTURE.md           — workspace architecture
+      3. GOVERNANCE/BOOTSTRAP.md   — session-start procedure
+      4. CONTEXT/workspace-index.json — generated workspace index
+
+    Failure recovery (per ADR-020):
+      - First 3 missing → emit a warning into the stable tier; do not abort.
+        A human-running session on a non-WSOS workspace is legitimate.
+      - workspace-index.json missing → proceed with empty state + warning.
+    """
+    from pathlib import Path as _P
+    try:
+        cwd = _P(getattr(agent, "cwd", None) or _P.cwd())
+    except Exception:
+        return ""
+    # Only auto-load when the agent is running in the canonical workspace.
+    if not (str(cwd).endswith("/projects") or cwd.name == "projects"):
+        return ""
+    wsos_root = cwd
+    files = [
+        ("IDENTITY.md", "WSOS Identity"),
+        ("ARCHITECTURE.md", "WSOS Architecture"),
+        ("GOVERNANCE/BOOTSTRAP.md", "WSOS Bootstrap Procedure"),
+        ("CONTEXT/workspace-index.json", "WSOS Workspace Index"),
+    ]
+    parts: List[str] = ["# Workspace OS Canonical Bootstrap (ADR-014)"]
+    any_missing_required = False
+    for rel, label in files:
+        p = wsos_root / rel
+        if not p.exists():
+            if rel == "CONTEXT/workspace-index.json":
+                parts.append(f"\n## {label} (MISSING — proceeding with empty state)")
+            else:
+                parts.append(
+                    f"\n## {label} (MISSING — required by WSOS bootstrap; "
+                    f"session continues but ADS compliance is degraded)"
+                )
+                any_missing_required = True
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+            parts.append(f"\n## {label}\n{text}")
+        except (OSError, UnicodeDecodeError) as e:
+            parts.append(f"\n## {label} (UNREADABLE: {e})\n")
+    if any_missing_required:
+        parts.append(
+            "\nWARNING: Required WSOS bootstrap file(s) missing. "
+            "Per ADR-020 the session continues but Article V/II compliance "
+            "is degraded. Operator should restore the missing files."
+        )
+    return "\n".join(parts)
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers.
 
@@ -327,6 +386,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         skills_prompt = ""
     if skills_prompt:
         stable_parts.append(skills_prompt)
+
+    # ADR-014: WSOS Bootstrap Loader — load the canonical 4 files into the
+    # stable tier when the agent's working directory is /home/tasar/projects.
+    # This closes the bootstrap asymmetry so every Hermes session starts aware
+    # of the workspace's governance, identity, architecture, and current state.
+    _wsos_bootstrap = _build_wsos_bootstrap(agent)
+    if _wsos_bootstrap:
+        stable_parts.append(_wsos_bootstrap)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt

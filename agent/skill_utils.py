@@ -171,6 +171,30 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
+# ADR-007: governance-source validation
+GOVERNANCE_KEYWORDS = (
+    "validate", "workspace-os", "constitution", "bootstrap",
+    "identity", "architecture", "mission state", "constitutional",
+)
+
+
+def check_skill_governance_source(skill_path: Path) -> Optional[str]:
+    """ADR-007: Return error if skill encodes governance without governance-source field."""
+    try:
+        content = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    frontmatter, body = parse_frontmatter(content)
+    if frontmatter.get("governance-source"):
+        return None
+    if not any(kw in content.lower() for kw in GOVERNANCE_KEYWORDS):
+        return None
+    return (
+        f"Skill '{skill_path.stem}' encodes governance content "
+        f"but lacks governance-source path-reference. ADR-007 requires path."
+    )
+
+
 # ── Platform matching ─────────────────────────────────────────────────────
 
 
