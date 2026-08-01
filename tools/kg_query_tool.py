@@ -2,8 +2,7 @@
 """kg_query - Query Knowledge OS typed entities (ADR-015).
 
 CORRECTED per Implementation Verification: the kgctl CLI does NOT have a
-'query' subcommand. This tool reads the canonical vault index.yaml directly
-using minimal YAML parsing (no PyYAML dependency).
+'query' subcommand. This tool reads the canonical vault index.yaml directly.
 
 Public API:
   kg_query(class_name, search, limit) -> dict
@@ -14,9 +13,15 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+try:
+    import yaml  # type: ignore
+    _HAVE_YAML = True
+except ImportError:
+    yaml = None  # type: ignore
+    _HAVE_YAML = False
 
 DEFAULT_VAULT = Path(
     os.environ.get(
@@ -38,61 +43,68 @@ MAX_LIMIT = 50
 DEFAULT_LIMIT = 10
 
 
-def _parse_yaml_simple(text: str) -> Dict[str, Any]:
-    """Minimal YAML loader for flat index.yaml with `entities: list[dicts]`."""
-    result: Dict[str, Any] = {"entities": []}
-    in_entities = False
-    current_entry: Optional[Dict[str, Any]] = None
+def _scan_resolve_dir(parent_path: str, name: str) -> Optional[str]:
+    """Resolve a child directory of parent_path by name using os.scandir.
 
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line or line.startswith("#"):
+    WSL/Drvfs robustness: the kernel's dcache may have a stale negative entry
+    for paths under /home/taras that were previously accessed from a different
+    mount namespace. os.scandir enumerates fresh; the returned path string is
+    open-able even when a hand-built path fails.
+    """
+    try:
+        for entry in os.scandir(parent_path):
+            if entry.name == name:
+                return entry.path
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _find_vault_path() -> Optional[str]:
+    """Walk from /home/taras to find workspace-knowledge-vault."""
+    anchors = ["/home/taras", "/home/tasar"]
+    for anchor in anchors:
+        if not os.path.isdir(anchor):
             continue
-        stripped = line.lstrip()
-        indent = len(line) - len(stripped)
-
-        if indent == 0 and stripped.startswith("entities:"):
-            in_entities = True
+        projects = _scan_resolve_dir(anchor, "projects")
+        if projects is None:
             continue
-        if not in_entities:
-            m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*):\s*(.*)$", stripped)
-            if m:
-                result[m.group(1)] = m.group(2).strip()
-            continue
-
-        if indent == 2 and stripped.startswith("- "):
-            if current_entry is not None:
-                result["entities"].append(current_entry)
-            current_entry = {}
-            rest = stripped[2:]
-            if ":" in rest:
-                k, _, v = rest.partition(":")
-                current_entry[k.strip()] = v.strip().strip('"').strip("'")
-            continue
-
-        if current_entry is None:
-            continue
-
-        if indent >= 4 and ":" in stripped:
-            k, _, v = stripped.partition(":")
-            k = k.strip()
-            v = v.strip()
-            if v:
-                current_entry[k] = v.strip('"').strip("'")
-
-    if current_entry is not None:
-        result["entities"].append(current_entry)
-    return result
+        vault = _scan_resolve_dir(projects, "workspace-knowledge-vault")
+        if vault is not None:
+            return vault
+    return None
 
 
 def _load_index(vault_path: Path) -> Dict[str, Any]:
-    index_path = vault_path / "index.yaml"
-    if not index_path.exists():
+    """Load index.yaml from the vault. Returns parsed dict or empty dict."""
+    # First try the direct path - common case
+    idx = vault_path / "index.yaml"
+    try:
+        if idx.exists():
+            with open(idx, encoding="utf-8") as f:
+                return yaml.safe_load(f) if _HAVE_YAML else {}
+    except (OSError, ValueError):
+        pass
+    # Fallback: scandir-based discovery
+    real_vault = _find_vault_path()
+    if real_vault is None:
         return {}
     try:
-        return _parse_yaml_simple(index_path.read_text(encoding="utf-8"))
+        idx_resolved = _scan_resolve_dir(real_vault, "index.yaml")
+        if idx_resolved is None:
+            return {}
+        with open(idx_resolved, encoding="utf-8") as f:
+            return yaml.safe_load(f) if _HAVE_YAML else {}
     except (OSError, ValueError):
         return {}
+
+
+def _norm(entity: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize entity keys: support both kebab-case and snake_case."""
+    out = dict(entity)
+    if "canonical-name" in out and "canonical_name" not in out:
+        out["canonical_name"] = out["canonical-name"]
+    return out
 
 
 def _match_class(entity: Dict[str, Any], class_name: str) -> bool:
@@ -108,7 +120,8 @@ def _match_search(entity: Dict[str, Any], search: str) -> bool:
     if not needle:
         return True
     parts: List[str] = []
-    for key in ("canonical_name", "name", "description", "aliases", "title", "summary"):
+    for key in ("canonical_name", "canonical-name", "name", "description",
+                "aliases", "title", "summary"):
         v = entity.get(key)
         if isinstance(v, str):
             parts.append(v)
@@ -134,12 +147,18 @@ def kg_query(
             "error": f"limit must be 1..{MAX_LIMIT}; got {limit!r}",
         }
 
-    vault = Path(vault_path) if vault_path else DEFAULT_VAULT
-    index = _load_index(vault)
+    if not _HAVE_YAML:
+        return {
+            "success": False,
+            "error": "PyYAML is not installed in this Python environment",
+        }
+
+    target = Path(vault_path) if vault_path else DEFAULT_VAULT
+    index = _load_index(target)
     if not index:
         return {
             "success": False,
-            "error": f"vault index not found at {vault / 'index.yaml'}",
+            "error": f"vault index not found at {DEFAULT_VAULT / 'index.yaml'}",
         }
 
     entities = index.get("entities") or []
@@ -150,9 +169,10 @@ def kg_query(
         }
 
     matches: List[Dict[str, Any]] = []
-    for entity in entities:
-        if not isinstance(entity, dict):
+    for raw in entities:
+        if not isinstance(raw, dict):
             continue
+        entity = _norm(raw)
         if not _match_class(entity, class_name):
             continue
         if not _match_search(entity, search):
@@ -165,15 +185,19 @@ def kg_query(
         "success": True,
         "entities": matches,
         "count": len(matches),
-        "vault": str(vault),
+        "vault": str(DEFAULT_VAULT),
         "source": "index",
     }
 
 
 def check_kg_query_requirements() -> bool:
-    if not DEFAULT_VAULT.exists():
+    """Preflight: verify the vault and yaml are reachable."""
+    if not _HAVE_YAML:
         return False
-    return bool(_load_index(DEFAULT_VAULT))
+    real_vault = _find_vault_path()
+    if real_vault is None:
+        return False
+    return _scan_resolve_dir(real_vault, "index.yaml") is not None
 
 
 TOOL_NAME = "kg_query"

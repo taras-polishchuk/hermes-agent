@@ -171,7 +171,20 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-    
+
+    "knowledge": {
+        "description": (
+            "Query the Knowledge OS typed entity vault (ADR-015). kg_query "
+            "reads workspace-knowledge-vault/index.yaml directly and filters "
+            "by class (Concept, Component, Decision, Lesson, Person, Project) "
+            "and/or free-text. Returns canonical entities without spawning "
+            "subprocesses. Requires the OSKG vault to be reachable; see "
+            "kg_query_tool.check_kg_query_requirements() for preflight."
+        ),
+        "tools": ["kg_query"],
+        "includes": []
+    },
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [
