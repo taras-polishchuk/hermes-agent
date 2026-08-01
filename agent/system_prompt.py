@@ -182,9 +182,54 @@ def _build_wsos_bootstrap(agent: Any) -> str:
     ]
     parts: List[str] = ["# Workspace OS Canonical Bootstrap (ADR-014)"]
     any_missing_required = False
+    import os as _os
+    def _resolve_wsos(rel: str):
+        """WSL/Drvfs-safe resolution: walk the path components via os.scandir.
+
+        Path.exists() returns False for paths under /home/taras/projects
+        after a different mount namespace has touched the directory
+        (negative dcache in Drvfs). Walk components one segment at a time
+        using os.scandir to force fresh directory enumeration.
+
+        Strategy: try absolute paths first; on ENOENT, fall back to
+        walking from the agent's actual process cwd via relative
+        os.scandir (which works even when absolute paths return False).
+        """
+        # Try the absolute path first
+        try:
+            absolute = str(wsos_root / rel)
+            if _os.path.isfile(absolute):
+                return _P(absolute)
+        except OSError:
+            pass
+        # Fallback: walk from process cwd
+        try:
+            current = _os.getcwd()
+            segments = rel.split("/")
+            for i, seg in enumerate(segments):
+                if i == 0:
+                    if not _os.path.isdir(current):
+                        return None
+                    continue
+                resolved = None
+                try:
+                    for entry in _os.scandir(current):
+                        if entry.name == seg:
+                            resolved = entry.path
+                            break
+                except OSError:
+                    return None
+                if resolved is None:
+                    return None
+                current = resolved
+            if _os.path.isfile(current):
+                return _P(current)
+            return None
+        except OSError:
+            return None
     for rel, label in files:
-        p = wsos_root / rel
-        if not p.exists():
+        resolved = _resolve_wsos(rel)
+        if resolved is None:
             if rel == "CONTEXT/workspace-index.json":
                 parts.append(f"\n## {label} (MISSING — proceeding with empty state)")
             else:
@@ -195,7 +240,7 @@ def _build_wsos_bootstrap(agent: Any) -> str:
                 any_missing_required = True
             continue
         try:
-            text = p.read_text(encoding="utf-8")
+            text = resolved.read_text(encoding="utf-8")
             parts.append(f"\n## {label}\n{text}")
         except (OSError, UnicodeDecodeError) as e:
             parts.append(f"\n## {label} (UNREADABLE: {e})\n")
