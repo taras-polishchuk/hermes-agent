@@ -26,7 +26,7 @@ except ImportError:
 DEFAULT_VAULT = Path(
     os.environ.get(
         "KG_VAULT_PATH",
-        "/home/tasar/projects/workspace-knowledge-vault",
+        "/home/taras/projects/workspace-knowledge-vault",
     )
 )
 
@@ -61,12 +61,46 @@ def _scan_resolve_dir(parent_path: str, name: str) -> Optional[str]:
 
 
 def _find_vault_path() -> Optional[str]:
-    """Walk from /home/taras to find workspace-knowledge-vault."""
-    anchors = ["/home/taras", "/home/tasar"]
-    for anchor in anchors:
-        if not os.path.isdir(anchor):
+    """Locate the canonical workspace-knowledge-vault.
+
+    Resolution order:
+      1. ``$KG_VAULT_PATH`` if it exists as a directory (operators and tests
+         can point the tool at any vault without touching the live one).
+      2. ``$HOME`` (the operator's actual home), then ``$HOME/projects``.
+      3. Conventional operator-home fallback ``/home/taras`` and
+         ``/home/taras/projects`` so the tool works even when HOME is
+         unset (cron jobs, bare docker containers).
+
+    ``_scan_resolve_dir`` provides WSL/Drvfs-safe resolution by enumerating
+    fresh through ``os.scandir`` instead of relying on ``Path.exists()``
+    against a path that may have a stale negative dcache.
+    """
+    env_override = os.environ.get("KG_VAULT_PATH")
+    if env_override and os.path.isdir(env_override):
+        return env_override
+    candidates: list[str] = []
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(home)
+        candidates.append(os.path.join(home, "projects"))
+    # Conventional operator-home fallback so the tool works even when HOME
+    # is unset (e.g. cron jobs, bare docker containers).
+    candidates.extend(("/home/taras", "/home/taras/projects"))
+    seen: set[str] = set()
+    for anchor in candidates:
+        if anchor in seen or not os.path.isdir(anchor):
+            seen.add(anchor)
             continue
-        projects = _scan_resolve_dir(anchor, "projects")
+        seen.add(anchor)
+        # If the anchor already names ``workspace-knowledge-vault`` directly,
+        # accept it (allows tests to point at a tmp vault via env override).
+        if os.path.basename(anchor.rstrip("/")) == "workspace-knowledge-vault":
+            return anchor
+        projects = (
+            anchor
+            if os.path.basename(anchor.rstrip("/")) == "projects"
+            else _scan_resolve_dir(anchor, "projects")
+        )
         if projects is None:
             continue
         vault = _scan_resolve_dir(projects, "workspace-knowledge-vault")

@@ -433,7 +433,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(skills_prompt)
 
     # ADR-014: WSOS Bootstrap Loader — load the canonical 4 files into the
-    # stable tier when the agent's working directory is /home/tasar/projects.
+    # stable tier when the agent's working directory is /home/taras/projects.
     # This closes the bootstrap asymmetry so every Hermes session starts aware
     # of the workspace's governance, identity, architecture, and current state.
     _wsos_bootstrap = _build_wsos_bootstrap(agent)
