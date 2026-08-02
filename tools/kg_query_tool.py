@@ -263,6 +263,27 @@ def handler(args: Dict[str, Any], **kwargs: Any) -> str:
     ))
 
 
+# ── Registry wiring ─────────────────────────────────────────────────────────
+# Until 2026-08-02 the kg_query tool was shipped as an orphan module: it
+# defined TOOL_NAME / TOOL_SCHEMA / handler() but never called
+# registry.register(), so discover_builtin_tools()'s AST prefilter (see
+# tools/registry.py:_module_registers_tools) skipped it and the LLM never
+# saw kg_query in its tool surface even when the "knowledge" toolset was
+# enabled. This call closes that gap. See
+# reports/knowledge-os-runtime-acceptance-2026-08-02.md for the audit
+# that surfaced the missing registration.
+from tools.registry import registry
+
+registry.register(
+    name=TOOL_NAME,
+    toolset=TOOLSET,
+    schema=TOOL_SCHEMA,
+    handler=handler,
+    check_fn=check_kg_query_requirements,
+    emoji="🧠",
+)
+
+
 if __name__ == "__main__":
     import argparse
     import sys

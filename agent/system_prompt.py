@@ -164,16 +164,51 @@ def _build_wsos_bootstrap(agent: Any) -> str:
       - First 3 missing → emit a warning into the stable tier; do not abort.
         A human-running session on a non-WSOS workspace is legitimate.
       - workspace-index.json missing → proceed with empty state + warning.
+
+    Discovery rule: the canonical 4 files live in the operator's ``projects/``
+    root. We discover the root by walking **upward** from the agent's cwd
+    until we find a directory that contains ``GOVERNANCE/BOOTSTRAP.md``
+    (the marker defined in ADR-014). This makes the loader work from any
+    subdirectory of ``projects/`` (e.g. ``projects/ai``, ``projects/career``)
+    and not just the literal ``projects/`` basename, so Knowledge OS
+    content reaches the LLM no matter where the agent was spawned from.
+
+    The literal basename / path-suffix check that previously lived here was a
+    local-only assumption (verified by the 2026-08-02 acceptance audit): an
+    agent running from ``projects/ai`` returned an empty string and silently
+    bypassed the canonical 4-file load, contradicting ADR-014's intent that
+    every Hermes session in the workspace start aware of the canonical
+    governance, identity, architecture, and current state.
     """
     from pathlib import Path as _P
     try:
-        cwd = _P(getattr(agent, "cwd", None) or _P.cwd())
+        cwd = _P(getattr(agent, "cwd", None) or _P.cwd()).resolve()
     except Exception:
         return ""
-    # Only auto-load when the agent is running in the canonical workspace.
-    if not (str(cwd).endswith("/projects") or cwd.name == "projects"):
-        return ""
-    wsos_root = cwd
+    # Walk upward to find the canonical WSOS root (a directory containing
+    # GOVERNANCE/BOOTSTRAP.md). This lets agents running in subdirectories
+    # like projects/ai or projects/career still pick up the canonical 4.
+    wsos_root: _P | None = None
+    _cur = cwd
+    # Bound the upward walk so we never escape the operator's home filesystem
+    # (which would silently read /home/anything/GOVERNANCE/BOOTSTRAP.md if
+    # such a file happened to exist on a multi-tenant host).
+    _max_hops = 8
+    for _ in range(_max_hops):
+        if (_cur / "GOVERNANCE/BOOTSTRAP.md").is_file():
+            wsos_root = _cur
+            break
+        if _cur == _cur.parent:
+            break
+        _cur = _cur.parent
+    if wsos_root is None:
+        # Fallback for the legacy literal-suffix check (preserves prior
+        # behavior for callers that pass a cwd already pointing at the
+        # canonical root via a symlink, junction, or non-resolvable mount).
+        if str(cwd).endswith("/projects") or cwd.name == "projects":
+            wsos_root = cwd
+        else:
+            return ""
     files = [
         ("IDENTITY.md", "WSOS Identity"),
         ("ARCHITECTURE.md", "WSOS Architecture"),
