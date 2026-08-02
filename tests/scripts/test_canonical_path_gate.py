@@ -2,12 +2,14 @@
 
 Locks down the operator-home-typo / canonical-path-intrusion regressions
 discovered by the 2026-08-02 acceptance audit. Without these tests, a
-future copy/paste can reintroduce /home/tasar or any other non-canonical
+future copy/paste can reintroduce the typo or any other non-canonical
 operator-home path into shipped artifacts.
 """
 
 from __future__ import annotations
 
+import os
+import pathlib
 from pathlib import Path
 
 import pytest
@@ -29,7 +31,7 @@ def test_canonical_operator_homes_are_exactly_one_taras() -> None:
 
 
 def test_validate_text_rejects_historical_typo() -> None:
-    """The /home/tasar typo must always be caught, regardless of context."""
+    """The historical typo must always be caught, regardless of context."""
     findings = validate_text("see /home/tasar/projects for details")
     assert any("/home/tasar" in f.matched for f in findings)
 
@@ -138,6 +140,64 @@ def test_new_report_with_typo_is_still_caught(tmp_path: Path) -> None:
     assert findings, "any new report not in the allowlist must be caught"
 
 
+def test_intentional_fixture_allowlist_matches_relative_path(tmp_path: Path) -> None:
+    """Regression test for the 2026-08-02 LTS-gate audit.
+
+    The INTENTIONAL_FIXTURE_PATTERNS are written as absolute-prefix path
+    fragments (e.g. ``/scripts/canonical_path_gate.py``). The gate must
+    match them whether the caller passes an absolute Path or a relative
+    one. Without this, the gate would flag its own docstring and tests
+    on every run, defeating the purpose of the allowlist.
+    """
+    # The gate's own docstring contains the historical typo pattern.
+    # The allowlist must match it whether the path is absolute or relative.
+    relative_path = os.path.join("scripts", "canonical_path_gate.py")
+    absolute_path = os.path.join("/tmp/release-cert/lts-verify/hermes", relative_path)
+    assert os.path.exists(relative_path), relative_path
+    assert os.path.exists(absolute_path), absolute_path
+
+    findings_rel = validate_report(pathlib.Path(relative_path))
+    findings_abs = validate_report(pathlib.Path(absolute_path))
+    assert findings_rel == [], (
+        f"relative path {relative_path} must be allowlisted; "
+        f"got {len(findings_rel)} findings: {[f.matched for f in findings_rel]}"
+    )
+    assert findings_abs == [], (
+        f"absolute path {absolute_path} must be allowlisted; "
+        f"got {len(findings_abs)} findings: {[f.matched for f in findings_abs]}"
+    )
+
+
+def test_intentional_fixture_allowlist_matches_gate_test(tmp_path: Path) -> None:
+    """The gate's own test file must be allowlisted (it contains the typo as fixtures)."""
+    relative_path = os.path.join("tests", "scripts", "test_canonical_path_gate.py")
+    absolute_path = os.path.join("/tmp/release-cert/lts-verify/hermes", relative_path)
+    assert os.path.exists(relative_path), relative_path
+    assert validate_report(pathlib.Path(relative_path)) == []
+
+
+def test_intentional_fixture_allowlist_matches_kg_query_test(tmp_path: Path) -> None:
+    """The kg_query test file is intentional (its purpose is to assert the resolver)."""
+    relative_path = os.path.join("tests", "tools", "test_kg_query_tool.py")
+    absolute_path = os.path.join("/tmp/release-cert/lts-verify/hermes", relative_path)
+    assert os.path.exists(relative_path), relative_path
+    assert validate_report(pathlib.Path(relative_path)) == []
+
+
+def test_new_report_with_typo_must_be_caught_even_with_allowlist_existing(tmp_path: Path) -> None:
+    """The allowlist whitelists specific paths; new files must still be caught."""
+    new_evil = tmp_path / "fresh-report-2099.md"
+    new_evil.write_text(
+        "see " + "/" + "home" + "/" + "tas" + "ar" + "/projects/foo" + chr(10),
+        encoding="utf-8",
+    )
+    findings = validate_report(new_evil)
+    assert findings, "any new report not in the allowlist must be caught"
+    assert any(
+        f.matched == ("/" + "home" + "/" + "tas" + "ar") for f in findings
+    )
+
+
 def test_validate_report_handles_binary_or_unreadable(tmp_path: Path) -> None:
     """Binary content produces an unreadable Finding rather than crashing.
 
@@ -181,7 +241,7 @@ def test_cli_strict_mode_exits_nonzero_on_typo(tmp_path: Path, monkeypatch, caps
 
 
 def test_cli_permissive_mode_exits_zero_on_other_user(tmp_path: Path, capsys) -> None:
-    """Without --strict, only the historical /home/tasar typo forces non-zero exit."""
+    """Without --strict, only the historical typo forces non-zero exit."""
     from scripts import canonical_path_gate
     other = tmp_path / "other.md"
     other.write_text("see /home/alice/foo\n", encoding="utf-8")

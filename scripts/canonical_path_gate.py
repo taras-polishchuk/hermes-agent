@@ -68,6 +68,9 @@ INTENTIONAL_FIXTURE_PATTERNS: tuple[str, ...] = (
     # This gate itself (its docstring explains the typo).
     "/scripts/canonical_path_gate.py",
     "/tests/scripts/test_canonical_path_gate.py",
+    # kg_query tool test (its purpose is to assert the resolver does
+    # not return the typo; the literal appears as fixture data).
+    "/tests/tools/test_kg_query_tool.py",
     # Our own scan + regression-audit tools (re-encode the literal
     # intentionally to surface every occurrence; the tools do NOT
     # ship the literal in their own emitted text — the literal is
@@ -172,8 +175,17 @@ def validate_report(path: Path) -> list[Finding]:
     # Allowlist: known intentional fixtures ship with the typo as part of
     # their documented purpose. Skipping them prevents the gate from
     # self-flagging on every run.
+    #
+    # The allowlist patterns are absolute-prefix path fragments (e.g.
+    # ``/scripts/canonical_path_gate.py``). We match against the absolute
+    # resolved path so callers can pass either relative or absolute
+    # PosixPath objects.
     spath = str(path)
-    if any(fragment in spath for fragment in INTENTIONAL_FIXTURE_PATTERNS):
+    try:
+        resolved = str(path.resolve())
+    except OSError:
+        resolved = spath
+    if any(fragment in resolved or fragment in spath for fragment in INTENTIONAL_FIXTURE_PATTERNS):
         return []
     try:
         text = path.read_text(encoding="utf-8")
